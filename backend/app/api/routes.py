@@ -78,34 +78,20 @@ async def get_news(symbol: AssetSymbol, settings: Settings = Depends(get_setting
     return await aggregator.get_news(symbol)
 
 
-@router.get("/signal/{symbol}")
-async def get_signal(
-    symbol: AssetSymbol,
-    timeframe: str = Query("H1", pattern="^(M15|H1|H4|D1)$"),
-    settings: Settings = Depends(get_settings),
-):
-    provider = get_provider_for_symbol(symbol, settings)
-    try:
-        series = await provider.get_candles(symbol.value, timeframe, 250)
-        analysis = run_technical_analysis(symbol, timeframe, series.candles)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Upstream data provider error: {e}") from e
-
-    aggregator = NewsAggregator(settings)
-    news = await aggregator.get_news(symbol)
-
-    llm = get_llm_client(settings)
-    decision = await get_trade_decision(llm, analysis, news)
-    return decision
-
-
 @router.get("/signal/compare", response_model=AssetComparison)
 async def compare_signal(
     timeframe: str = Query("H1", pattern="^(M15|H1|H4|D1)$"),
     settings: Settings = Depends(get_settings),
     cache: CacheService = Depends(get_cache),
 ):
-    """The headline feature: Gold vs BTC, which offers better R:R right now."""
+    """The headline feature: Gold vs BTC, which offers better R:R right now.
+
+    IMPORTANT: this route must be declared BEFORE /signal/{symbol} below.
+    FastAPI matches routes in declaration order, and {symbol} is a path
+    parameter that would otherwise greedily match the literal string
+    "compare" as if it were a symbol, causing a 422 validation error
+    ("Input should be 'XAUUSD' or 'BTCUSD'") on every call to this endpoint.
+    """
     cache_key = f"compare:{timeframe}"
     cached = await cache.get_json(cache_key)
     if cached:
@@ -131,3 +117,24 @@ async def compare_signal(
 
     await cache.set_json(cache_key, comparison.model_dump(mode="json"), ttl=settings.analysis_refresh_interval_sec)
     return comparison
+
+
+@router.get("/signal/{symbol}")
+async def get_signal(
+    symbol: AssetSymbol,
+    timeframe: str = Query("H1", pattern="^(M15|H1|H4|D1)$"),
+    settings: Settings = Depends(get_settings),
+):
+    provider = get_provider_for_symbol(symbol, settings)
+    try:
+        series = await provider.get_candles(symbol.value, timeframe, 250)
+        analysis = run_technical_analysis(symbol, timeframe, series.candles)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Upstream data provider error: {e}") from e
+
+    aggregator = NewsAggregator(settings)
+    news = await aggregator.get_news(symbol)
+
+    llm = get_llm_client(settings)
+    decision = await get_trade_decision(llm, analysis, news)
+    return decision
